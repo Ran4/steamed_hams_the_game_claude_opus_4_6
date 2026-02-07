@@ -1515,74 +1515,184 @@ def draw_hud(surf, player, font):
 # ============================================================
 # TITLE SCREEN
 # ============================================================
+def _dither_rect(surf, color, rect, pattern=0):
+    """Draw a dithered rectangle (NES-style half-tone shading)."""
+    x, y, w, h = rect
+    for py in range(y, y + h):
+        for px in range(x, x + w):
+            if 0 <= px < surf.get_width() and 0 <= py < surf.get_height():
+                if (px + py + pattern) % 2 == 0:
+                    surf.set_at((px, py), color)
+
+
 def draw_title_screen(surf, font, frame):
-    """Draw the NES title screen."""
+    """Draw the NES title screen - detailed Skinner house exterior."""
     surf.fill(C_BLACK)
 
-    # Skinner's house (simplified)
-    # Sky
-    pygame.draw.rect(surf, C_SKYBLUE, (0, 0, NES_W, 120))
-    # Clouds
-    for cx_pos, cy_pos in [(40, 20), (140, 30), (200, 15)]:
-        pygame.draw.ellipse(surf, C_WHITE, (cx_pos, cy_pos, 40, 16))
-    # Trees
-    pygame.draw.rect(surf, C_DGREEN, (0, 40, 30, 80))
-    pygame.draw.rect(surf, C_GREEN, (5, 30, 25, 50))
-    pygame.draw.rect(surf, C_DGREEN, (220, 50, 36, 70))
-    pygame.draw.rect(surf, C_GREEN, (225, 35, 30, 60))
-    # House
-    # Roof
-    points = [(70, 40), (128, 10), (186, 40)]
-    pygame.draw.polygon(surf, C_BLUE, points)
-    # Walls
-    pygame.draw.rect(surf, C_LPURPLE, (70, 40, 116, 80))
-    # Windows
-    pygame.draw.rect(surf, C_LAVENDER, (80, 50, 20, 20))
-    pygame.draw.rect(surf, C_LAVENDER, (150, 50, 20, 20))
-    # Shutters
-    pygame.draw.rect(surf, C_FIRE_Y, (76, 50, 4, 20))
-    pygame.draw.rect(surf, C_FIRE_Y, (100, 50, 4, 20))
-    pygame.draw.rect(surf, C_FIRE_Y, (146, 50, 4, 20))
-    pygame.draw.rect(surf, C_FIRE_Y, (170, 50, 4, 20))
-    # Door
-    pygame.draw.rect(surf, C_BLUE, (113, 80, 18, 40))
-    pygame.draw.rect(surf, C_DGRAY, (115, 82, 14, 36))
-    # Porch
-    pygame.draw.rect(surf, C_BLUE, (60, 78, 136, 4))
-    # Steps
-    pygame.draw.rect(surf, C_LGRAY, (105, 120, 34, 6))
-    # Driveway
-    pygame.draw.rect(surf, C_LGRAY, (40, 120, 70, 30))
-    # Grass
+    # === SKY ===
+    pygame.draw.rect(surf, C_SKYBLUE, (0, 0, NES_W, 130))
+
+    # Mountains in background
+    mtn_color = (100, 100, 180)
+    pygame.draw.polygon(surf, mtn_color, [(0, 55), (30, 25), (60, 40), (90, 15), (130, 50), (130, 55)])
+    pygame.draw.polygon(surf, mtn_color, [(120, 55), (160, 20), (200, 40), (230, 10), (256, 35), (256, 55)])
+
+    # Clouds (puffy, multi-ellipse)
+    for cx, cy in [(70, 12), (190, 8)]:
+        pygame.draw.ellipse(surf, C_WHITE, (cx - 20, cy, 40, 14))
+        pygame.draw.ellipse(surf, C_WHITE, (cx - 10, cy - 6, 30, 14))
+        pygame.draw.ellipse(surf, C_WHITE, (cx, cy - 2, 24, 12))
+
+    # === TREES (background layer, behind house) ===
+    # Left trees (pine-like) with dithered foliage
+    tree_dk = (0, 100, 0)
+    pygame.draw.rect(surf, C_DGREEN, (0, 20, 55, 110))
+    _dither_rect(surf, tree_dk, (0, 20, 55, 110))
+    # Pine tree tops (jagged)
+    for tx in range(0, 50, 10):
+        h = 20 + (tx * 7) % 15
+        pygame.draw.polygon(surf, C_DGREEN, [(tx, 20), (tx + 5, 20 - h), (tx + 10, 20)])
+    # Fence post on far left
+    pygame.draw.rect(surf, C_FIRE_Y, (2, 85, 4, 30))
+    pygame.draw.rect(surf, C_FIRE_Y, (2, 85, 10, 3))
+
+    # Right tree (big deciduous) - canopy overlaps house
+    pygame.draw.rect(surf, C_GREEN, (185, 10, 71, 90))
+    _dither_rect(surf, tree_dk, (185, 10, 71, 90), 1)
+    # Tree trunk
+    pygame.draw.rect(surf, (180, 160, 0), (205, 80, 8, 50))
+    pygame.draw.rect(surf, (200, 180, 0), (207, 80, 4, 50))
+    # Bushes at base of right tree
+    pygame.draw.rect(surf, (0, 60, 100), (220, 95, 36, 25))
+    pygame.draw.rect(surf, (0, 60, 100), (195, 100, 30, 20))
+
+    # === GRASS & GROUND ===
     pygame.draw.rect(surf, C_GREEN, (0, 120, NES_W, 30))
-    # Circular window
-    pygame.draw.circle(surf, C_LPURPLE, (128, 28), 8)
-    pygame.draw.circle(surf, C_WHITE, (128, 28), 8, 1)
-    pygame.draw.line(surf, C_WHITE, (120, 28), (136, 28), 1)
-    pygame.draw.line(surf, C_WHITE, (128, 20), (128, 36), 1)
+    # Driveway (diagonal, left side)
+    pygame.draw.polygon(surf, C_LGRAY, [(20, 120), (60, 120), (90, 150), (40, 150)])
+    # Sidewalk strip at very bottom
+    pygame.draw.rect(surf, C_LGRAY, (0, 146, NES_W, 4))
 
-    # Skinner on porch
+    # === HOUSE ===
+    hx, hy = 55, 15  # house origin
+
+    # Lower floor / porch base (blue band)
+    pygame.draw.rect(surf, C_BLUE, (hx - 5, hy + 65, 156, 55))
+
+    # Upper floor walls
+    pygame.draw.rect(surf, C_LPURPLE, (hx + 15, hy + 30, 116, 38))
+
+    # Roof triangle
+    pygame.draw.polygon(surf, C_BLUE, [
+        (hx + 10, hy + 30), (hx + 73, hy), (hx + 136, hy + 30)
+    ])
+    # Roof edge line
+    pygame.draw.line(surf, (0, 0, 120), (hx + 10, hy + 30), (hx + 73, hy), 1)
+    pygame.draw.line(surf, (0, 0, 120), (hx + 73, hy), (hx + 136, hy + 30), 1)
+
+    # Circular attic window
+    acx, acy = hx + 73, hy + 17
+    pygame.draw.circle(surf, C_BLUE, (acx, acy), 7)
+    pygame.draw.circle(surf, C_LPURPLE, (acx, acy), 6)
+    pygame.draw.circle(surf, (0, 0, 120), (acx, acy), 7, 1)
+    pygame.draw.line(surf, (0, 0, 120), (acx - 6, acy), (acx + 6, acy), 1)
+    pygame.draw.line(surf, (0, 0, 120), (acx, acy - 6), (acx, acy + 6), 1)
+
+    # Upper floor windows (3x2 panes each, with shutters)
+    for wx in [hx + 27, hx + 95]:
+        # Shutters (yellow)
+        pygame.draw.rect(surf, C_FIRE_Y, (wx - 6, hy + 35, 5, 22))
+        pygame.draw.rect(surf, C_FIRE_Y, (wx + 25, hy + 35, 5, 22))
+        # Shutter slats
+        for sy in range(hy + 37, hy + 55, 3):
+            pygame.draw.line(surf, (180, 140, 0), (wx - 5, sy), (wx - 2, sy), 1)
+            pygame.draw.line(surf, (180, 140, 0), (wx + 26, sy), (wx + 29, sy), 1)
+        # Window frame
+        pygame.draw.rect(surf, C_WHITE, (wx, hy + 35, 24, 22))
+        pygame.draw.rect(surf, (0, 0, 120), (wx, hy + 35, 24, 22), 1)
+        # Panes (3 cols x 2 rows)
+        for row in range(2):
+            for col in range(3):
+                px = wx + 1 + col * 8
+                py = hy + 36 + row * 11
+                pygame.draw.rect(surf, C_LAVENDER, (px, py, 7, 10))
+                pygame.draw.rect(surf, C_WHITE, (px, py, 7, 10), 1)
+
+    # Lower awning
+    pygame.draw.rect(surf, C_BLUE, (hx + 10, hy + 65, 126, 5))
+
+    # Garage door (left side)
+    gx, gy = hx - 3, hy + 73
+    pygame.draw.rect(surf, C_BLUE, (gx, gy, 36, 42))
+    pygame.draw.rect(surf, (0, 0, 120), (gx, gy, 36, 42), 1)
+    # Garage panels
+    for row in range(3):
+        for col in range(2):
+            pygame.draw.rect(surf, (0, 0, 150),
+                             (gx + 2 + col * 17, gy + 2 + row * 13, 15, 12), 1)
+
+    # Lower floor windows (with shutters) - flanking the door
+    for wx in [hx + 43, hx + 98]:
+        # Shutters
+        pygame.draw.rect(surf, C_FIRE_Y, (wx - 4, hy + 73, 4, 25))
+        pygame.draw.rect(surf, C_FIRE_Y, (wx + 24, hy + 73, 4, 25))
+        # Window frame
+        pygame.draw.rect(surf, C_WHITE, (wx, hy + 73, 24, 25))
+        pygame.draw.rect(surf, (0, 0, 120), (wx, hy + 73, 24, 25), 1)
+        # Panes (3x2)
+        for row in range(2):
+            for col in range(3):
+                px = wx + 1 + col * 8
+                py = hy + 74 + row * 12
+                pygame.draw.rect(surf, C_LAVENDER, (px, py, 7, 11))
+                pygame.draw.rect(surf, C_WHITE, (px, py, 7, 11), 1)
+
+    # Front door
+    dx, dy = hx + 72, hy + 75
+    pygame.draw.rect(surf, C_BLUE, (dx, dy, 16, 40))
+    pygame.draw.rect(surf, (0, 0, 120), (dx, dy, 16, 40), 1)
+
+    # Porch railings
+    ry = hy + 95
+    pygame.draw.rect(surf, C_LPURPLE, (hx + 35, ry, 100, 2))  # top rail
+    pygame.draw.rect(surf, C_LPURPLE, (hx + 35, ry + 18, 100, 2))  # bottom rail
+    # Vertical balusters
+    for bx in range(hx + 37, hx + 135, 5):
+        if abs(bx - (dx + 8)) > 12:  # skip near door/steps
+            pygame.draw.line(surf, C_LPURPLE, (bx, ry), (bx, ry + 20), 1)
+
+    # Steps (leading down from door)
+    for i in range(4):
+        step_y = hy + 115 + i * 3
+        step_w = 22 + i * 2
+        pygame.draw.rect(surf, C_LGRAY, (dx - 3 - i, step_y, step_w, 3))
+        pygame.draw.rect(surf, C_DGRAY, (dx - 3 - i, step_y, step_w, 1))
+
+    # Porch light above door
+    pygame.draw.rect(surf, C_FIRE_Y, (dx + 6, hy + 69, 4, 6))
+
+    # === SKINNER in doorway ===
     s = create_skinner_sprite(True, (frame // 15) % 2)
-    surf.blit(pygame.transform.scale(s, (16, 28)), (120, 90))
+    surf.blit(pygame.transform.scale(s, (14, 24)), (dx + 1, dy + 14))
 
-    # Title text
+    # === Right tree canopy overlap (in front of house) ===
+    pygame.draw.rect(surf, C_GREEN, (195, 15, 61, 55))
+    _dither_rect(surf, tree_dk, (195, 15, 61, 55), 1)
+
+    # === TITLE TEXT ===
     title1 = font.render("STEAMED HAMS", False, C_WHITE)
     title2 = font.render("THE GAME", False, C_WHITE)
-    tw1 = title1.get_width()
-    tw2 = title2.get_width()
-    surf.blit(title1, (NES_W // 2 - tw1 // 2, 160))
-    surf.blit(title2, (NES_W // 2 - tw2 // 2, 175))
+    surf.blit(title1, (NES_W // 2 - title1.get_width() // 2, 160))
+    surf.blit(title2, (NES_W // 2 - title2.get_width() // 2, 175))
 
     # Blink "PRESS START"
     if (frame // 30) % 2 == 0:
         start_text = font.render("PRESS ENTER TO START", False, C_WHITE)
-        sw = start_text.get_width()
-        surf.blit(start_text, (NES_W // 2 - sw // 2, 200))
+        surf.blit(start_text, (NES_W // 2 - start_text.get_width() // 2, 200))
 
     # Copyright
     copy_text = font.render("(C) 1991 IMAGINEERING INC.", False, C_DGRAY)
-    cw = copy_text.get_width()
-    surf.blit(copy_text, (NES_W // 2 - cw // 2, 225))
+    surf.blit(copy_text, (NES_W // 2 - copy_text.get_width() // 2, 225))
 
 
 # ============================================================
