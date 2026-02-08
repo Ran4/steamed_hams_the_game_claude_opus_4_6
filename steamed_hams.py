@@ -8,6 +8,7 @@ Controls:
   Arrow Keys - Move
   Z / Space  - Jump
   X / Enter  - Advance dialogue / Interact
+  S          - Fire spray can
   Escape     - Quit
 """
 
@@ -93,6 +94,7 @@ def init_sounds():
         sounds["collect"] = generate_square_wave(880, 60, 0.1)
         sounds["hurt"] = generate_square_wave(200, 150, 0.1)
         sounds["stomp"] = generate_square_wave(330, 50, 0.1)
+        sounds["spray"] = generate_square_wave(550, 60, 0.08)
         sounds["text"] = generate_square_wave(660, 20, 0.05)
         # Collect jingle: two notes
         s1 = generate_square_wave(523, 80, 0.1)  # C
@@ -436,6 +438,8 @@ class Player:
         self.lives = 4
         self.score = 0
         self.inventory = []
+        self.spray_ammo = 0
+        self.facing = 1  # 1 = right, -1 = left
         self.goals_done = 0
         self.anim_frame = 0
         self.anim_timer = 0
@@ -445,6 +449,7 @@ class Player:
         self._jump_sound = False
         self._hurt_sound = False
         self._collect_sound = False
+        self.drop_through_timer = 0
 
     def update(self, keys, platforms, level_width):
         # Horizontal movement
@@ -452,15 +457,30 @@ class Player:
         if keys[pygame.K_LEFT]:
             self.vx = -PLAYER_SPEED
             self.facing_right = False
+            self.facing = -1
         if keys[pygame.K_RIGHT]:
             self.vx = PLAYER_SPEED
             self.facing_right = True
+            self.facing = 1
 
         # Jump
         if (keys[pygame.K_z] or keys[pygame.K_SPACE] or keys[pygame.K_UP]) and self.on_ground:
             self.vy = JUMP_VEL
             self.on_ground = False
             self._jump_sound = True
+
+        # Drop-through platforms: press DOWN while on a non-floor platform
+        if keys[pygame.K_DOWN] and self.on_ground and self.drop_through_timer == 0:
+            foot_rect = pygame.Rect(self.x, self.y + self.h, self.w, 4)
+            for plat in platforms:
+                if foot_rect.colliderect(plat.rect) and plat.rect.height <= 10:
+                    self.drop_through_timer = 10
+                    self.on_ground = False
+                    self.vy = 1.0
+                    break
+
+        if self.drop_through_timer > 0:
+            self.drop_through_timer -= 1
 
         # Gravity
         self.vy += GRAVITY
@@ -477,6 +497,8 @@ class Player:
         self.on_ground = False
         rect = pygame.Rect(self.x, self.y, self.w, self.h)
         for plat in platforms:
+            if self.drop_through_timer > 0:
+                continue  # Skip platform collision while dropping through
             if rect.colliderect(plat.rect):
                 if self.vy > 0 and old_bottom <= plat.rect.top + 2:
                     # One-way platform: land on top only when falling from above
@@ -696,6 +718,106 @@ class FireHazard:
         pygame.draw.rect(surf, C_FIRE_O, (dx + 2, dy + 6, 8, 8))
 
 
+class Particle:
+    """Small colored square for visual juice."""
+    def __init__(self, x, y, vx, vy, color, life=30, size=2):
+        self.x, self.y = float(x), float(y)
+        self.vx, self.vy = vx, vy
+        self.color = color
+        self.life = life
+        self.max_life = life
+        self.size = size
+
+    def update(self):
+        self.x += self.vx
+        self.y += self.vy
+        self.vy += 0.12  # gravity
+        self.life -= 1
+
+    def draw(self, surf, cam_x=0):
+        if self.life <= 0:
+            return
+        # Flicker effect near end of life
+        if self.life < self.max_life * 0.4 and random.random() > 0.6:
+            return
+        sx = int(self.x - cam_x)
+        sy = int(self.y)
+        if 0 <= sx < NES_W and 0 <= sy < NES_H:
+            pygame.draw.rect(surf, self.color, (sx, sy, self.size, self.size))
+
+
+class FloatingText:
+    """Score text that floats upward and disappears."""
+    def __init__(self, x, y, text, color=C_WHITE, life=40):
+        self.x, self.y = float(x), float(y)
+        self.text = text
+        self.color = color
+        self.life = life
+        self.max_life = life
+
+    def update(self):
+        self.y -= 0.5
+        self.life -= 1
+
+
+class SprayProjectile:
+    """A spray cloud projectile fired by the player."""
+
+    def __init__(self, x, y, direction):
+        self.x = float(x)
+        self.y = float(y)
+        self.direction = direction  # 1 = right, -1 = left
+        self.speed = 2.5
+        self.distance_traveled = 0.0
+        self.max_distance = 60.0
+        self.alive = True
+        self.age = 0  # frames since creation
+
+    def update(self):
+        if not self.alive:
+            return
+        dx = self.speed * self.direction
+        self.x += dx
+        self.distance_traveled += abs(dx)
+        self.age += 1
+        if self.distance_traveled >= self.max_distance:
+            self.alive = False
+
+    @property
+    def rect(self):
+        # Hitbox grows slightly as it travels
+        size = 6 + int(self.distance_traveled / 15)
+        return pygame.Rect(self.x - size // 2, self.y - size // 2, size, size)
+
+    def draw(self, surf, cam_x=0):
+        if not self.alive:
+            return
+        dx = int(self.x - cam_x)
+        dy = int(self.y)
+        # Progress 0.0 to 1.0 through lifetime
+        t = self.distance_traveled / self.max_distance
+        # Base size grows as it travels
+        base_r = 2 + int(t * 3)
+        # Draw a small puff of circles in white/gray that expand
+        alpha = max(40, int(200 * (1.0 - t)))
+        puff_surf = pygame.Surface((base_r * 6, base_r * 6), pygame.SRCALPHA)
+        cx, cy = puff_surf.get_width() // 2, puff_surf.get_height() // 2
+        # Outer gray circle
+        pygame.draw.circle(puff_surf, (*C_DGRAY, alpha), (cx, cy), base_r + 2)
+        # Middle lighter circle
+        pygame.draw.circle(puff_surf, (*C_LGRAY, alpha),
+                           (cx + self.direction, cy - 1), base_r + 1)
+        # Inner white circle
+        pygame.draw.circle(puff_surf, (*C_WHITE, alpha), (cx, cy), base_r)
+        # Small offset puffs
+        pygame.draw.circle(puff_surf, (*C_GRAY, alpha),
+                           (cx + self.direction * 2, cy - 2), max(1, base_r - 1))
+        pygame.draw.circle(puff_surf, (*C_LGRAY, alpha),
+                           (cx - self.direction, cy + 1), max(1, base_r - 1))
+        surf.blit(puff_surf, (dx - puff_surf.get_width() // 2,
+                               dy - puff_surf.get_height() // 2))
+
+
 # ============================================================
 # LEVEL DEFINITIONS
 # ============================================================
@@ -749,19 +871,110 @@ def draw_house_bg(surf, cam_x, level):
     surf.fill(C_LAVENDER)
     # Wall panels
     pygame.draw.rect(surf, C_LPURPLE, (0 - cam_x, 0, 512, PLAY_H - 8))
-    # Wall accent line at top
-    pygame.draw.rect(surf, C_LAVENDER, (0 - cam_x, 0, 512, 3))
+    # Patterned wallpaper effect - alternating purple shades in a grid
+    for wy in range(0, PLAY_H - 8, 8):
+        for wx in range(0, 512, 8):
+            if (wx // 8 + wy // 8) % 2 == 0:
+                pygame.draw.rect(surf, C_MAUVE, (wx - cam_x, wy, 8, 8))
+    # Ceiling line
+    pygame.draw.rect(surf, C_DGRAY, (0 - cam_x, 0, 512, 2))
+    pygame.draw.rect(surf, C_WHITE, (0 - cam_x, 2, 512, 1))
+    # Wall accent line at top (crown molding)
+    pygame.draw.rect(surf, C_LAVENDER, (0 - cam_x, 3, 512, 3))
+    # Baseboard trim along wall bottom
+    pygame.draw.rect(surf, (100, 60, 30), (0 - cam_x, PLAY_H - 14, 512, 6))
+    pygame.draw.rect(surf, C_DBROWN, (0 - cam_x, PLAY_H - 14, 512, 2))
     # Room divider
     pygame.draw.rect(surf, C_WHITE, (250 - cam_x, 0, 3, PLAY_H - 8))
     # Floor
     pygame.draw.rect(surf, C_PINK, (0 - cam_x, PLAY_H - 8, 512, 16))
+    # Rug/carpet on floor (left room)
+    rug_x = 60 - cam_x
+    rug_y = PLAY_H - 8
+    pygame.draw.rect(surf, C_DRED, (rug_x, rug_y, 80, 6))
+    pygame.draw.rect(surf, C_RED, (rug_x + 2, rug_y + 1, 76, 4))
+    for rx in range(rug_x + 4, rug_x + 76, 6):
+        pygame.draw.rect(surf, C_FIRE_Y, (rx, rug_y + 2, 3, 2))
+    # Rug/carpet on floor (right room)
+    rug2_x = 310 - cam_x
+    pygame.draw.rect(surf, C_DRED, (rug2_x, rug_y, 100, 6))
+    pygame.draw.rect(surf, C_RED, (rug2_x + 2, rug_y + 1, 96, 4))
+    for rx in range(rug2_x + 4, rug2_x + 96, 6):
+        pygame.draw.rect(surf, C_FIRE_Y, (rx, rug_y + 2, 3, 2))
     # Door (left side - entry)
     draw_door(surf, 15, PLAY_H - 48, cam_x, C_BLUE)
+    # Wall clock (left room) with pendulum
+    clk_x = 200 - cam_x
+    clk_y = 20
+    pygame.draw.ellipse(surf, C_BROWN, (clk_x - 1, clk_y - 1, 16, 16))
+    pygame.draw.ellipse(surf, C_WHITE, (clk_x, clk_y, 14, 14))
+    pygame.draw.ellipse(surf, C_BLACK, (clk_x, clk_y, 14, 14), 1)
+    pygame.draw.rect(surf, C_BLACK, (clk_x + 6, clk_y + 3, 1, 5))
+    pygame.draw.rect(surf, C_BLACK, (clk_x + 6, clk_y + 6, 4, 1))
+    pygame.draw.rect(surf, C_BROWN, (clk_x + 6, clk_y + 14, 2, 10))
+    pygame.draw.ellipse(surf, C_FIRE_Y, (clk_x + 4, clk_y + 22, 6, 6))
+    # Detailed window with panes and curtains (left room)
+    win_x = 170 - cam_x
+    win_y = 35
+    pygame.draw.rect(surf, C_BROWN, (win_x - 4, win_y - 3, 40, 2))
+    pygame.draw.rect(surf, C_DRED, (win_x - 3, win_y - 1, 8, 38))
+    for cy in range(win_y + 1, win_y + 36, 4):
+        pygame.draw.rect(surf, C_RED, (win_x - 2, cy, 6, 2))
+    pygame.draw.rect(surf, C_DRED, (win_x + 27, win_y - 1, 8, 38))
+    for cy in range(win_y + 1, win_y + 36, 4):
+        pygame.draw.rect(surf, C_RED, (win_x + 28, cy, 6, 2))
+    pygame.draw.rect(surf, C_WHITE, (win_x, win_y, 32, 36))
+    pygame.draw.rect(surf, C_BLACK, (win_x, win_y, 32, 36), 1)
+    for row in range(2):
+        for col in range(3):
+            ppx = win_x + 1 + col * 10
+            ppy = win_y + 1 + row * 18
+            pygame.draw.rect(surf, C_SKYBLUE, (ppx, ppy, 10, 17))
+            pygame.draw.rect(surf, C_WHITE, (ppx, ppy, 10, 17), 1)
+    pygame.draw.rect(surf, C_WHITE, (win_x + 10, win_y, 2, 36))
+    pygame.draw.rect(surf, C_WHITE, (win_x + 20, win_y, 2, 36))
+    pygame.draw.rect(surf, C_WHITE, (win_x, win_y + 17, 32, 2))
+    # Window with panes and curtains (right room)
+    win2_x = 410 - cam_x
+    win2_y = 35
+    pygame.draw.rect(surf, C_BROWN, (win2_x - 4, win2_y - 3, 40, 2))
+    pygame.draw.rect(surf, C_DRED, (win2_x - 3, win2_y - 1, 8, 38))
+    for cy in range(win2_y + 1, win2_y + 36, 4):
+        pygame.draw.rect(surf, C_RED, (win2_x - 2, cy, 6, 2))
+    pygame.draw.rect(surf, C_DRED, (win2_x + 27, win2_y - 1, 8, 38))
+    for cy in range(win2_y + 1, win2_y + 36, 4):
+        pygame.draw.rect(surf, C_RED, (win2_x + 28, cy, 6, 2))
+    pygame.draw.rect(surf, C_WHITE, (win2_x, win2_y, 32, 36))
+    pygame.draw.rect(surf, C_BLACK, (win2_x, win2_y, 32, 36), 1)
+    for row in range(2):
+        for col in range(3):
+            ppx = win2_x + 1 + col * 10
+            ppy = win2_y + 1 + row * 18
+            pygame.draw.rect(surf, C_SKYBLUE, (ppx, ppy, 10, 17))
+            pygame.draw.rect(surf, C_WHITE, (ppx, ppy, 10, 17), 1)
+    pygame.draw.rect(surf, C_WHITE, (win2_x + 10, win2_y, 2, 36))
+    pygame.draw.rect(surf, C_WHITE, (win2_x + 20, win2_y, 2, 36))
+    pygame.draw.rect(surf, C_WHITE, (win2_x, win2_y + 17, 32, 2))
     # Bookshelves
     draw_bookshelf(surf, 140, PLAY_H - 80, cam_x)
     draw_bookshelf(surf, 275, PLAY_H - 80, cam_x)
     # Couch
     draw_couch(surf, 380, PLAY_H - 32, cam_x)
+    # Lamp on end table (right room, near couch)
+    lamp_x = 360 - cam_x
+    lamp_y = PLAY_H - 52
+    pygame.draw.rect(surf, C_BROWN, (lamp_x, lamp_y + 20, 14, 3))
+    pygame.draw.rect(surf, C_BROWN, (lamp_x + 3, lamp_y + 23, 2, 12))
+    pygame.draw.rect(surf, C_BROWN, (lamp_x + 9, lamp_y + 23, 2, 12))
+    pygame.draw.rect(surf, C_FIRE_Y, (lamp_x + 6, lamp_y + 4, 2, 16))
+    pygame.draw.polygon(surf, C_CREAM, [
+        (lamp_x + 2, lamp_y + 4),
+        (lamp_x + 12, lamp_y + 4),
+        (lamp_x + 14, lamp_y - 6),
+        (lamp_x, lamp_y - 6),
+    ])
+    pygame.draw.rect(surf, C_FIRE_Y, (lamp_x + 3, lamp_y - 7, 8, 2))
+    pygame.draw.rect(surf, C_WHITE, (lamp_x + 5, lamp_y - 4, 4, 3))
     # Small table with fishbowl
     draw_table(surf, 90, PLAY_H - 30, cam_x)
     # Fishbowl on table
@@ -769,15 +982,27 @@ def draw_house_bg(surf, cam_x, level):
     fy = PLAY_H - 40
     pygame.draw.ellipse(surf, C_CYAN, (fx, fy, 10, 10))
     pygame.draw.ellipse(surf, C_LBLUE, (fx + 1, fy + 1, 8, 8))
-    # Picture on wall (left room)
+    # Small fish in bowl
+    pygame.draw.rect(surf, C_ORANGE, (fx + 3, fy + 4, 3, 2))
+    pygame.draw.rect(surf, C_ORANGE, (fx + 2, fy + 5, 1, 1))
+    # Picture on wall (left room) with sailboat detail
     pygame.draw.rect(surf, C_BROWN, (60 - cam_x, 30, 24, 20))
     pygame.draw.rect(surf, C_LBLUE, (62 - cam_x, 32, 20, 16))
+    pygame.draw.rect(surf, C_WHITE, (70 - cam_x, 34, 2, 10))
+    pygame.draw.polygon(surf, C_WHITE, [
+        (72 - cam_x, 34), (72 - cam_x, 42), (78 - cam_x, 42)
+    ])
     # Picture on wall (right room)
     pygame.draw.rect(surf, C_BROWN, (330 - cam_x, 30, 28, 22))
     pygame.draw.rect(surf, C_DRED, (332 - cam_x, 32, 24, 18))
-    # Shelves on wall
+    # Shelves on wall with small items
     pygame.draw.rect(surf, C_ORANGE, (180 - cam_x, 50, 40, 4))
+    pygame.draw.rect(surf, C_CYAN, (184 - cam_x, 46, 4, 4))
+    pygame.draw.rect(surf, C_FIRE_Y, (192 - cam_x, 44, 3, 6))
+    pygame.draw.rect(surf, C_WHITE, (200 - cam_x, 46, 5, 4))
     pygame.draw.rect(surf, C_ORANGE, (320 - cam_x, 45, 35, 4))
+    pygame.draw.rect(surf, C_GREEN, (325 - cam_x, 40, 4, 5))
+    pygame.draw.rect(surf, C_LBLUE, (335 - cam_x, 41, 5, 4))
     # Plant/cactus between bookshelves
     px = 260 - cam_x
     pygame.draw.rect(surf, C_BROWN, (px + 2, PLAY_H - 22, 6, 14))
@@ -839,32 +1064,87 @@ def draw_school_bg(surf, cam_x, level):
     for i in range(-20, 768 + 20, 8):
         x = i - int(cam_x) % 8
         pygame.draw.line(surf, C_DGRAY, (x, 0), (x + 20, 20), 1)
+    # Fluorescent lights on ceiling
+    for flx in range(60, 768, 160):
+        fl_sx = flx - cam_x
+        pygame.draw.rect(surf, C_WHITE, (fl_sx, 18, 40, 4))
+        pygame.draw.rect(surf, C_LGRAY, (fl_sx + 2, 19, 36, 2))
     # Floor
     pygame.draw.rect(surf, C_DRED, (0 - cam_x, PLAY_H - 8, 768, 16))
+    # Tile pattern on floor (alternating colored squares)
+    for ty in range(PLAY_H - 8, PLAY_H + 8, 8):
+        for tx in range(0, 768, 8):
+            if (tx // 8 + ty // 8) % 2 == 0:
+                pygame.draw.rect(surf, (140, 10, 0), (tx - cam_x, ty, 8, 8))
+            else:
+                pygame.draw.rect(surf, C_DRED, (tx - cam_x, ty, 8, 8))
+    # Floor shine line
+    pygame.draw.rect(surf, (200, 60, 40), (0 - cam_x, PLAY_H - 6, 768, 1))
     # Baseboard
     pygame.draw.rect(surf, C_BROWN, (0 - cam_x, PLAY_H - 10, 768, 2))
-    # Lockers along the back
+    # Lockers along the back (gray rectangles with handles)
     for lx in range(50, 700, 100):
         draw_lockers(surf, lx, PLAY_H - 64, cam_x, 6)
+    # Extra locker vents (detail on upper wall)
+    for lx in range(50, 700, 100):
+        llx = lx - cam_x
+        for i in range(6):
+            ix = llx + i * 12
+            pygame.draw.rect(surf, C_DGRAY, (ix, 22, 11, 16))
+            pygame.draw.rect(surf, C_GRAY, (ix + 1, 23, 9, 14))
+            for sv in range(25, 34, 3):
+                pygame.draw.rect(surf, C_DGRAY, (ix + 3, sv, 5, 1))
     # Clocks
     draw_clock(surf, 120, 24, cam_x)
     draw_clock(surf, 500, 24, cam_x)
     # Water fountain
     draw_water_fountain(surf, 320, PLAY_H - 32, cam_x)
-    # Doors
-    draw_door(surf, 10, PLAY_H - 48, cam_x, C_PURPLE)
-    draw_door(surf, 400, PLAY_H - 48, cam_x, C_PURPLE)
-    draw_door(surf, 730, PLAY_H - 48, cam_x, C_PURPLE)
+    # Second water fountain
+    draw_water_fountain(surf, 620, PLAY_H - 32, cam_x)
+    # Doors with EXIT signs above
+    for door_x in [10, 400, 730]:
+        draw_door(surf, door_x, PLAY_H - 48, cam_x, C_PURPLE)
+        # EXIT sign above door
+        esx = door_x - cam_x
+        pygame.draw.rect(surf, C_RED, (esx + 2, PLAY_H - 58, 16, 8))
+        pygame.draw.rect(surf, C_LRED, (esx + 3, PLAY_H - 57, 14, 6))
+        # E
+        pygame.draw.rect(surf, C_WHITE, (esx + 4, PLAY_H - 56, 1, 4))
+        pygame.draw.rect(surf, C_WHITE, (esx + 5, PLAY_H - 56, 2, 1))
+        pygame.draw.rect(surf, C_WHITE, (esx + 5, PLAY_H - 54, 1, 1))
+        pygame.draw.rect(surf, C_WHITE, (esx + 5, PLAY_H - 53, 2, 1))
+        # X
+        pygame.draw.rect(surf, C_WHITE, (esx + 8, PLAY_H - 56, 1, 1))
+        pygame.draw.rect(surf, C_WHITE, (esx + 10, PLAY_H - 56, 1, 1))
+        pygame.draw.rect(surf, C_WHITE, (esx + 9, PLAY_H - 55, 1, 2))
+        pygame.draw.rect(surf, C_WHITE, (esx + 8, PLAY_H - 53, 1, 1))
+        pygame.draw.rect(surf, C_WHITE, (esx + 10, PLAY_H - 53, 1, 1))
+        # I
+        pygame.draw.rect(surf, C_WHITE, (esx + 12, PLAY_H - 56, 1, 4))
+        # T
+        pygame.draw.rect(surf, C_WHITE, (esx + 14, PLAY_H - 56, 3, 1))
+        pygame.draw.rect(surf, C_WHITE, (esx + 15, PLAY_H - 55, 1, 3))
     # Bulletin board
     bx = 280 - cam_x
     pygame.draw.rect(surf, C_BROWN, (bx, 28, 30, 24))
     pygame.draw.rect(surf, C_CREAM, (bx + 2, 30, 12, 10))
     pygame.draw.rect(surf, C_WHITE, (bx + 16, 30, 12, 10))
     pygame.draw.rect(surf, C_CREAM, (bx + 5, 42, 8, 8))
+    # Pushpins on bulletin board
+    pygame.draw.rect(surf, C_RED, (bx + 7, 30, 2, 2))
+    pygame.draw.rect(surf, C_LBLUE, (bx + 21, 30, 2, 2))
+    pygame.draw.rect(surf, C_FIRE_Y, (bx + 8, 42, 2, 2))
     # Second bulletin board
     bx2 = 600 - cam_x
     pygame.draw.rect(surf, C_BROWN, (bx2, 28, 26, 20))
     pygame.draw.rect(surf, C_WHITE, (bx2 + 2, 30, 22, 16))
+    pygame.draw.rect(surf, C_RED, (bx2 + 10, 30, 2, 2))
+    # Banner / pennant on wall
+    pn_x = 240 - cam_x
+    pygame.draw.polygon(surf, C_FIRE_Y, [
+        (pn_x, 24), (pn_x + 16, 24), (pn_x + 8, 38)
+    ])
+    pygame.draw.rect(surf, C_BROWN, (pn_x, 22, 16, 3))
 
 
 def create_level_street():
@@ -915,8 +1195,27 @@ def draw_street_bg(surf, cam_x, level):
     """Draw street background."""
     # Sky
     surf.fill(C_SKYBLUE)
+
+    # Background building silhouettes (far distance, darker)
+    for sb_x, sb_w, sb_h in [(200, 60, 70), (300, 45, 55), (450, 70, 80),
+                               (560, 40, 50), (680, 55, 65)]:
+        sx = sb_x - cam_x * 0.3  # parallax scrolling
+        pygame.draw.rect(surf, (60, 80, 120), (sx, PLAY_H - 50 - sb_h, sb_w, sb_h))
+        # Tiny windows on silhouettes
+        for swy in range(PLAY_H - 50 - sb_h + 6, PLAY_H - 54, 12):
+            for swx in range(6, sb_w - 6, 10):
+                pygame.draw.rect(surf, (80, 100, 140), (sx + swx, swy, 4, 6))
+
     # Grass
     pygame.draw.rect(surf, C_GREEN, (0 - cam_x, PLAY_H - 50, 1024, 42))
+    # Road strip behind sidewalk
+    pygame.draw.rect(surf, C_DGRAY, (0 - cam_x, PLAY_H - 20, 1024, 12))
+    # Road lane markings (dashed white center line)
+    for dl in range(0, 1024, 24):
+        dx = dl - cam_x
+        pygame.draw.rect(surf, C_FIRE_Y, (dx, PLAY_H - 15, 12, 2))
+    # Curb
+    pygame.draw.rect(surf, C_LGRAY, (0 - cam_x, PLAY_H - 8, 1024, 2))
     # Sidewalk
     pygame.draw.rect(surf, C_GRAY, (0 - cam_x, PLAY_H - 8, 1024, 16))
     pygame.draw.rect(surf, C_LGRAY, (0 - cam_x, PLAY_H - 10, 1024, 3))
@@ -930,40 +1229,124 @@ def draw_street_bg(surf, cam_x, level):
     bx = 0 - cam_x
     pygame.draw.rect(surf, C_RED, (bx, 0, 120, PLAY_H - 50))
     pygame.draw.rect(surf, C_TEAL, (bx, PLAY_H - 100, 120, 50))
-    # Windows
+    # Brick pattern
+    for bry in range(0, PLAY_H - 100, 6):
+        offset = 5 if (bry // 6) % 2 else 0
+        for brx in range(0, 120, 10):
+            pygame.draw.rect(surf, C_DRED, (bx + brx + offset, bry, 9, 5), 1)
+    # Windows with frames
     for wy in range(20, 80, 30):
         for wx in range(20, 100, 40):
+            pygame.draw.rect(surf, C_BROWN, (bx + wx - 1, wy - 1, 18, 22))
             pygame.draw.rect(surf, C_SKYBLUE, (bx + wx, wy, 16, 20))
+            # Window cross
+            pygame.draw.rect(surf, C_BROWN, (bx + wx + 7, wy, 2, 20))
+            pygame.draw.rect(surf, C_BROWN, (bx + wx, wy + 9, 16, 2))
+    # Door on building 1
+    pygame.draw.rect(surf, C_BROWN, (bx + 50, PLAY_H - 80, 20, 30))
+    pygame.draw.rect(surf, C_DBROWN, (bx + 52, PLAY_H - 78, 16, 28))
+    pygame.draw.rect(surf, C_FIRE_Y, (bx + 64, PLAY_H - 66, 3, 3))
 
     # Krusty Burger building (right side)
     kx = 780 - cam_x
     pygame.draw.rect(surf, C_ORANGE, (kx, 0, 244, PLAY_H - 50))
     pygame.draw.rect(surf, C_DRED, (kx, 0, 244, 20))
-    # Sign
-    pygame.draw.rect(surf, C_FIRE_Y, (kx + 20, 30, 80, 30))
-    # Window
+    # Krusty Burger sign (detailed)
+    pygame.draw.rect(surf, C_FIRE_Y, (kx + 20, 25, 90, 35))
+    pygame.draw.rect(surf, C_ORANGE, (kx + 22, 27, 86, 31))
+    # Sign border
+    pygame.draw.rect(surf, C_RED, (kx + 22, 27, 86, 31), 1)
+    # "K" letter on sign
+    pygame.draw.rect(surf, C_RED, (kx + 30, 32, 2, 16))
+    pygame.draw.rect(surf, C_RED, (kx + 32, 38, 2, 2))
+    pygame.draw.rect(surf, C_RED, (kx + 34, 36, 2, 2))
+    pygame.draw.rect(surf, C_RED, (kx + 36, 32, 2, 4))
+    pygame.draw.rect(surf, C_RED, (kx + 34, 40, 2, 2))
+    pygame.draw.rect(surf, C_RED, (kx + 36, 42, 2, 6))
+    # "B" letter on sign
+    pygame.draw.rect(surf, C_RED, (kx + 42, 32, 2, 16))
+    pygame.draw.rect(surf, C_RED, (kx + 44, 32, 4, 2))
+    pygame.draw.rect(surf, C_RED, (kx + 48, 34, 2, 4))
+    pygame.draw.rect(surf, C_RED, (kx + 44, 38, 4, 2))
+    pygame.draw.rect(surf, C_RED, (kx + 48, 40, 2, 6))
+    pygame.draw.rect(surf, C_RED, (kx + 44, 46, 4, 2))
+    # Clown face (simple) on sign
+    pygame.draw.ellipse(surf, C_FIRE_Y, (kx + 60, 30, 20, 20))
+    pygame.draw.ellipse(surf, C_RED, (kx + 60, 30, 20, 20), 1)
+    pygame.draw.rect(surf, C_BLACK, (kx + 65, 36, 2, 2))
+    pygame.draw.rect(surf, C_BLACK, (kx + 73, 36, 2, 2))
+    pygame.draw.rect(surf, C_RED, (kx + 67, 42, 6, 3))
+    # Windows on Krusty Burger
+    pygame.draw.rect(surf, C_BROWN, (kx + 38, 68, 54, 44))
     pygame.draw.rect(surf, C_SKYBLUE, (kx + 40, 70, 50, 40))
+    # Window pane cross
+    pygame.draw.rect(surf, C_BROWN, (kx + 64, 70, 2, 40))
+    pygame.draw.rect(surf, C_BROWN, (kx + 40, 89, 50, 2))
+    # Awning over door
+    pygame.draw.polygon(surf, C_RED, [
+        (kx + 100, PLAY_H - 80), (kx + 140, PLAY_H - 80),
+        (kx + 145, PLAY_H - 65), (kx + 95, PLAY_H - 65),
+    ])
+    # Awning stripes
+    for as_x in range(kx + 100, kx + 140, 8):
+        pygame.draw.rect(surf, C_WHITE, (as_x, PLAY_H - 80, 4, 15))
+    # Door
+    pygame.draw.rect(surf, C_DRED, (kx + 105, PLAY_H - 65, 30, 15))
+    pygame.draw.rect(surf, C_BROWN, (kx + 107, PLAY_H - 63, 26, 13))
+
+    # Streetlights (poles with lights)
+    for sl_x in [250, 500, 750]:
+        sl_sx = sl_x - cam_x
+        # Pole
+        pygame.draw.rect(surf, C_DGRAY, (sl_sx, 10, 3, PLAY_H - 60))
+        # Light fixture arm
+        pygame.draw.rect(surf, C_DGRAY, (sl_sx - 4, 8, 11, 3))
+        # Light bulb
+        pygame.draw.ellipse(surf, C_FIRE_Y, (sl_sx - 3, 10, 9, 6))
+        pygame.draw.ellipse(surf, C_WHITE, (sl_sx - 2, 11, 7, 4))
 
     # Power line poles
-    for px in [120, 380, 640]:
-        pole_x = px - cam_x
+    for ppx in [120, 380, 640]:
+        pole_x = ppx - cam_x
         pygame.draw.rect(surf, C_BROWN, (pole_x, 20, 4, PLAY_H - 70))
+        # Crossbar on pole
+        pygame.draw.rect(surf, C_BROWN, (pole_x - 6, 24, 16, 3))
     # Power lines
     for px_start, px_end in [(120, 320), (380, 580), (640, 840)]:
         sx = px_start - cam_x + 2
         ex = px_end - cam_x + 2
+        pygame.draw.line(surf, C_DGRAY, (sx, 26), (ex, 26), 1)
         pygame.draw.line(surf, C_DGRAY, (sx, 50), (ex, 50), 1)
+
+    # Fire hydrant
+    fh_x = 160 - cam_x
+    fh_y = PLAY_H - 20
+    pygame.draw.rect(surf, C_RED, (fh_x + 2, fh_y, 6, 12))
+    pygame.draw.rect(surf, C_RED, (fh_x, fh_y + 3, 10, 3))
+    pygame.draw.rect(surf, C_DRED, (fh_x + 3, fh_y - 2, 4, 3))
+    pygame.draw.rect(surf, C_FIRE_Y, (fh_x, fh_y + 4, 2, 2))
+    pygame.draw.rect(surf, C_FIRE_Y, (fh_x + 8, fh_y + 4, 2, 2))
+
+    # Second fire hydrant
+    fh2_x = 700 - cam_x
+    pygame.draw.rect(surf, C_RED, (fh2_x + 2, fh_y, 6, 12))
+    pygame.draw.rect(surf, C_RED, (fh2_x, fh_y + 3, 10, 3))
+    pygame.draw.rect(surf, C_DRED, (fh2_x + 3, fh_y - 2, 4, 3))
+    pygame.draw.rect(surf, C_FIRE_Y, (fh2_x, fh_y + 4, 2, 2))
+    pygame.draw.rect(surf, C_FIRE_Y, (fh2_x + 8, fh_y + 4, 2, 2))
 
     # Bushes
     for bx_pos in [150, 350, 550]:
         bx2 = bx_pos - cam_x
         pygame.draw.ellipse(surf, C_DGREEN, (bx2, PLAY_H - 60, 30, 15))
+        pygame.draw.ellipse(surf, C_GREEN, (bx2 + 4, PLAY_H - 58, 22, 10))
 
     # Grass tufts
     for gx in range(0, 1024, 40):
         x = gx - cam_x
         pygame.draw.rect(surf, C_DGREEN, (x, PLAY_H - 52, 2, 4))
         pygame.draw.rect(surf, C_DGREEN, (x + 8, PLAY_H - 54, 2, 6))
+        pygame.draw.rect(surf, C_DGREEN, (x + 16, PLAY_H - 51, 2, 3))
 
 
 def create_level_thought():
@@ -1074,10 +1457,49 @@ def create_level_house_fire():
 def draw_house_fire_bg(surf, cam_x, level):
     """Draw house on fire background."""
     draw_house_bg(surf, cam_x, level)
-    # Orange glow overlay on right side
+    # Dramatic fire glow - orange/red gradient at edges
     glow = pygame.Surface((512, PLAY_H), pygame.SRCALPHA)
-    glow.fill((248, 120, 0, 30))
+    glow.fill((248, 120, 0, 35))
     surf.blit(glow, (0 - cam_x, 0))
+    # Red glow along bottom edge
+    glow_bottom = pygame.Surface((512, 30), pygame.SRCALPHA)
+    glow_bottom.fill((228, 56, 0, 40))
+    surf.blit(glow_bottom, (0 - cam_x, PLAY_H - 38))
+    # Red glow along top edge
+    glow_top = pygame.Surface((512, 20), pygame.SRCALPHA)
+    glow_top.fill((228, 56, 0, 30))
+    surf.blit(glow_top, (0 - cam_x, 0))
+    # Side glow (left)
+    glow_left = pygame.Surface((40, PLAY_H), pygame.SRCALPHA)
+    glow_left.fill((248, 80, 0, 25))
+    surf.blit(glow_left, (0 - cam_x, 0))
+    # Side glow (right)
+    glow_right = pygame.Surface((40, PLAY_H), pygame.SRCALPHA)
+    glow_right.fill((248, 80, 0, 25))
+    surf.blit(glow_right, (472 - cam_x, 0))
+    # Smoke wisps rising from the top
+    frame = pygame.time.get_ticks() // 100
+    for si in range(8):
+        smoke_x = 40 + si * 60 + ((frame + si * 7) % 12) - 6
+        smoke_y = 4 + ((frame + si * 3) % 10)
+        smoke_a = 60 - ((frame + si * 5) % 6) * 8
+        if smoke_a > 0:
+            smoke_s = pygame.Surface((8, 6), pygame.SRCALPHA)
+            smoke_s.fill((80, 80, 80, min(smoke_a, 60)))
+            surf.blit(smoke_s, (smoke_x - cam_x, smoke_y))
+    # Cracked/broken window effect on left room window
+    cw_x = 170 - cam_x
+    cw_y = 35
+    # Diagonal crack lines over window
+    pygame.draw.line(surf, C_BLACK, (cw_x + 5, cw_y + 3), (cw_x + 20, cw_y + 25), 1)
+    pygame.draw.line(surf, C_BLACK, (cw_x + 18, cw_y + 5), (cw_x + 8, cw_y + 30), 1)
+    pygame.draw.line(surf, C_BLACK, (cw_x + 12, cw_y + 2), (cw_x + 25, cw_y + 18), 1)
+    # Falling embers/ash (small orange dots)
+    for ei in range(12):
+        ember_x = 20 + ei * 40 + ((frame + ei * 11) % 20) - 10
+        ember_y = ((frame * 3 + ei * 37) % (PLAY_H - 20)) + 5
+        ember_c = [C_FIRE_Y, C_FIRE_O, C_FIRE_R][ei % 3]
+        pygame.draw.rect(surf, ember_c, (ember_x - cam_x, ember_y, 2, 2))
 
 
 # ============================================================
@@ -1508,6 +1930,14 @@ def draw_hud(surf, player, font):
     if player.current_item_icon:
         player.current_item_icon(surf, 200, hud_y + 18)
 
+    # Spray ammo indicator (shown only if ammo > 0)
+    if player.spray_ammo > 0:
+        draw_spray_can(surf, 224, hud_y + 18)
+        ammo_text = font.render(str(player.spray_ammo), False, C_LGREEN)
+        surf.blit(ammo_text, (236, hud_y + 20))
+        ammo_label = font.render("SPRAY", False, C_LGREEN)
+        surf.blit(ammo_label, (222, hud_y + 30))
+
     # Border
     pygame.draw.rect(surf, C_BLUE, (0, hud_y, NES_W, HUD_H), 1)
 
@@ -1832,6 +2262,13 @@ class Game:
         self.current_level = None
         self.cam_x = 0
 
+        # Visual juice
+        self.particles = []
+        self.floating_texts = []
+
+        # Spray projectiles
+        self.projectiles = []
+
         # Cutscene state
         self.cs_data = None
         self.cs_scene_idx = 0
@@ -1842,6 +2279,10 @@ class Game:
         self.cs_waiting = False
         self.cs_frame = 0
 
+        # Screen wipe transition
+        self.transition_timer = 0
+        self.transition_pending = False  # True = waiting to switch state after wipe
+
         # Key debounce
         self.prev_keys = {}
 
@@ -1851,7 +2292,14 @@ class Game:
         return current[key] and not was
 
     def advance_sequence(self):
-        """Move to the next item in the game sequence."""
+        """Move to the next item in the game sequence (with screen wipe)."""
+        if self.transition_timer > 0:
+            return  # Already transitioning
+        self.transition_timer = 30  # Half second wipe at 60fps
+        self.transition_pending = True
+
+    def _complete_advance(self):
+        """Actually perform the state switch after transition completes."""
         self.seq_index += 1
         if self.seq_index >= len(self.sequence):
             self.state = "credits"
@@ -1894,6 +2342,7 @@ class Game:
         self.player.current_item_name = ""
         self.player.current_item_icon = None
         self.cam_x = 0
+        self.projectiles = []
 
     def run(self):
         while self.running:
@@ -1904,7 +2353,8 @@ class Game:
             self.prev_keys = {k: pygame.key.get_pressed()[k]
                               for k in [pygame.K_RETURN, pygame.K_x,
                                         pygame.K_z, pygame.K_SPACE,
-                                        pygame.K_ESCAPE, pygame.K_UP]}
+                                        pygame.K_ESCAPE, pygame.K_UP,
+                                        pygame.K_s]}
             self.clock.tick(FPS)
         pygame.quit()
         sys.exit()
@@ -1921,6 +2371,14 @@ class Game:
                     self.sounds["collect_hi"].play()
 
     def update(self):
+        # Screen wipe transition: freeze gameplay while transitioning
+        if self.transition_timer > 0:
+            self.transition_timer -= 1
+            if self.transition_timer == 0 and self.transition_pending:
+                self.transition_pending = False
+                self._complete_advance()
+            return
+
         if self.state == "title":
             self.update_title()
         elif self.state == "cutscene":
@@ -2010,6 +2468,44 @@ class Game:
         if self.player._hurt_sound and "hurt" in self.sounds:
             self.sounds["hurt"].play()
 
+        # Fire spray projectile (S key)
+        if self.key_just_pressed(pygame.K_s) and self.player.spray_ammo > 0:
+            self.player.spray_ammo -= 1
+            px = self.player.x + (self.player.w if self.player.facing == 1 else 0)
+            py = self.player.y + self.player.h // 2
+            self.projectiles.append(SprayProjectile(px, py, self.player.facing))
+            if "spray" in self.sounds:
+                self.sounds["spray"].play()
+
+        # Update spray projectiles
+        for proj in self.projectiles:
+            proj.update()
+        self.projectiles = [p for p in self.projectiles if p.alive]
+
+        # Check projectile-enemy collisions
+        for proj in self.projectiles:
+            if not proj.alive:
+                continue
+            for enemy in level["enemies"]:
+                if enemy.alive and proj.rect.colliderect(enemy.rect):
+                    enemy.alive = False
+                    proj.alive = False
+                    self.player.score += 100
+                    if "stomp" in self.sounds:
+                        self.sounds["stomp"].play()
+                    # Spawn particles for spray kill
+                    for _ in range(6):
+                        pvx = random.uniform(-1.5, 1.5)
+                        pvy = random.uniform(-2.0, 0)
+                        pc = random.choice([C_WHITE, C_LGRAY, C_GRAY])
+                        self.particles.append(
+                            Particle(enemy.x + enemy.w // 2,
+                                     enemy.y + enemy.h // 2,
+                                     pvx, pvy, pc, life=20))
+                    self.floating_texts.append(
+                        FloatingText(enemy.x, enemy.y - 8, "+100", C_LGREEN))
+                    break
+
         # Update camera
         target_x = self.player.x - NES_W // 2 + self.player.w // 2
         self.cam_x += (target_x - self.cam_x) * 0.1
@@ -2028,8 +2524,28 @@ class Game:
                     self.player.score += 100
                     if "stomp" in self.sounds:
                         self.sounds["stomp"].play()
+                    # Stomp particles (red burst outward)
+                    cx = enemy.x + enemy.w // 2
+                    cy = enemy.y + enemy.h // 2
+                    for _ in range(12):
+                        vx = random.uniform(-2.5, 2.5)
+                        vy = random.uniform(-3.0, -0.5)
+                        c = random.choice([C_RED, C_LRED, C_ORANGE])
+                        s = random.choice([2, 3])
+                        self.particles.append(Particle(cx, cy, vx, vy, c, life=random.randint(20, 35), size=s))
+                    self.floating_texts.append(FloatingText(cx - 8, cy - 8, "+100"))
                 else:
+                    old_invuln = self.player.invuln_timer
                     self.player.take_damage(1)
+                    # Damage particles (red flash around player)
+                    if old_invuln == 0 and self.player.invuln_timer > 0:
+                        px = self.player.x + self.player.w // 2
+                        py = self.player.y + self.player.h // 2
+                        for _ in range(8):
+                            vx = random.uniform(-2.0, 2.0)
+                            vy = random.uniform(-2.0, 2.0)
+                            c = random.choice([C_RED, C_LRED, C_WHITE])
+                            self.particles.append(Particle(px, py, vx, vy, c, life=random.randint(15, 25), size=2))
 
         # Update NPCs
         for npc in level["npcs"]:
@@ -2040,6 +2556,8 @@ class Game:
             if not item.collected and self.player.rect.colliderect(item.rect):
                 item.collected = True
                 self.player.inventory.append(item.item_type)
+                if item.item_type == "spray_can":
+                    self.player.spray_ammo += 3
                 self.player.score += 250
                 if "collect" in self.sounds:
                     self.sounds["collect"].play()
@@ -2056,11 +2574,29 @@ class Game:
                     "spray_can": draw_spray_can,
                 }
                 self.player.current_item_icon = icon_map.get(item.item_type)
+                # Collection particles (yellow/white burst upward)
+                ix = item.x + item.w // 2
+                iy = item.y + item.h // 2
+                for _ in range(10):
+                    vx = random.uniform(-1.5, 1.5)
+                    vy = random.uniform(-3.5, -1.0)
+                    c = random.choice([C_YELLOW, C_WHITE, C_FIRE_Y])
+                    s = random.choice([2, 3])
+                    self.particles.append(Particle(ix, iy, vx, vy, c, life=random.randint(20, 35), size=s))
+                self.floating_texts.append(FloatingText(ix - 8, iy - 10, "+250"))
 
         # Check fire hazards
         for fire in level["fires"]:
             if self.player.rect.colliderect(fire.rect):
                 self.player.take_damage(1)
+
+        # Update particles and floating texts
+        for p in self.particles:
+            p.update()
+        self.particles = [p for p in self.particles if p.life > 0]
+        for ft in self.floating_texts:
+            ft.update()
+        self.floating_texts = [ft for ft in self.floating_texts if ft.life > 0]
 
         # Check level completion
         exit_x = level.get("exit_x", -1)
@@ -2109,6 +2645,15 @@ class Game:
         elif self.state == "credits":
             draw_credits(self.nes, self.font, self.player, self.frame)
 
+        # Screen wipe transition overlay (black bars closing from top/bottom)
+        if self.transition_timer > 0:
+            # progress goes from 1.0 (just started) to 0.0 (about to finish)
+            progress = self.transition_timer / 30.0
+            # Bar height: 0 at start, half screen at middle of transition
+            bar_h = int((1.0 - progress) * (NES_H // 2))
+            pygame.draw.rect(self.nes, C_BLACK, (0, 0, NES_W, bar_h))
+            pygame.draw.rect(self.nes, C_BLACK, (0, NES_H - bar_h, NES_W, bar_h))
+
         # Scale NES surface to window
         scaled = pygame.transform.scale(self.nes, (WIN_W, WIN_H))
         self.screen.blit(scaled, (0, 0))
@@ -2125,6 +2670,8 @@ class Game:
 
     def draw_cutscene(self):
         if self.cs_data is None:
+            return
+        if self.cs_scene_idx >= len(self.cs_data["scenes"]):
             return
         scene = self.cs_data["scenes"][self.cs_scene_idx]
         # Draw illustration
@@ -2182,6 +2729,23 @@ class Game:
 
         # Draw player
         self.player.draw(self.nes, int(self.cam_x))
+
+        # Draw spray projectiles
+        for proj in self.projectiles:
+            proj.draw(self.nes, int(self.cam_x))
+
+        # Draw particles
+        for p in self.particles:
+            p.draw(self.nes, int(self.cam_x))
+
+        # Draw floating score texts
+        for ft in self.floating_texts:
+            if ft.life > 0:
+                rendered = self.font.render(ft.text, False, ft.color)
+                sx = int(ft.x - self.cam_x)
+                sy = int(ft.y)
+                if 0 <= sx < NES_W and 0 <= sy < NES_H:
+                    self.nes.blit(rendered, (sx, sy))
 
         # Draw HUD
         draw_hud(self.nes, self.player, self.font)
